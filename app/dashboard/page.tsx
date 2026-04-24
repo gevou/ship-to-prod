@@ -2,12 +2,18 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+interface ThreadMessage {
+  timestamp: string;
+  [key: string]: unknown;
+}
+
 interface Thread {
   id: string;
   name: string;
   status: string;
   summary: string;
   messageCount: number;
+  history: ThreadMessage[];
 }
 
 export default function Dashboard() {
@@ -40,7 +46,23 @@ export default function Dashboard() {
       }, 2500);
     }
 
-    setThreads(data);
+    setThreads(prev => {
+      const merged = [...prev];
+      for (const newThread of data) {
+        const existing = merged.find(t => t.id === newThread.id);
+        if (existing) {
+          const existingTimestamps = new Set(existing.history.map(m => m.timestamp));
+          const newMsgs = newThread.history.filter(m => !existingTimestamps.has(m.timestamp));
+          existing.history = [...existing.history, ...newMsgs];
+          existing.summary = newThread.summary;
+          existing.status = newThread.status;
+        } else {
+          merged.push(newThread);
+        }
+      }
+      merged.sort((a, b) => a.id.localeCompare(b.id));
+      return merged;
+    });
     setLastUpdated(new Date());
   };
 

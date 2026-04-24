@@ -75,7 +75,7 @@ export default function Home() {
     vapi.on('speech-end', () => setStatus('listening'));
     vapi.on('error', (err: unknown) => {
       console.error('Vapi error:', JSON.stringify(err, null, 2), err);
-      const msg = (err as { message?: string })?.message ?? String(err) ?? 'Call failed';
+      const msg = (err as { message?: string })?.message ?? JSON.stringify(err) ?? 'Call failed';
       setErrorMsg(msg);
       setStatus('error');
     });
@@ -232,7 +232,7 @@ export default function Home() {
         className="shrink-0 flex flex-col items-center gap-5 backdrop-blur-xl"
         style={{
           padding: '16px 24px max(env(safe-area-inset-bottom), 24px)',
-          background: 'linear-gradient(to bottom, transparent 0%, rgba(14,10,4,0.85) 40%, rgba(14,10,4,1) 70%)',
+          background: 'linear-gradient(to bottom, transparent 0%, rgba(9,9,15,0.85) 40%, rgba(9,9,15,1) 70%)',
           zIndex: 10,
         }}
       >
