@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import Vapi from '@vapi-ai/web';
 
 interface TranscriptEntry {
@@ -8,36 +8,80 @@ interface TranscriptEntry {
   text: string;
 }
 
+type AgentStatus = 'idle' | 'connecting' | 'listening' | 'speaking' | 'error';
+
+function MicIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="2" width="6" height="11" rx="3" fill="currentColor" />
+      <path d="M5 10a7 7 0 0 0 14 0" stroke="currentColor" strokeWidth="2" />
+      <path d="M12 17v4M9 21h6" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function WaveBars({ color }: { color: string }) {
+  return (
+    <div className="flex items-center gap-[3px]" style={{ height: 28 }} aria-hidden="true">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <div
+          key={i}
+          className="w-[3px] rounded-full"
+          style={{
+            backgroundColor: color,
+            height: '100%',
+            animation: 'wavebar 0.7s ease-in-out infinite',
+            animationDelay: `${i * 0.12}s`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <div
+      className="w-7 h-7 rounded-full border-2 border-white/20 border-t-white/70"
+      style={{ animation: 'spin 0.8s linear infinite' }}
+      aria-hidden="true"
+    />
+  );
+}
+
 export default function Home() {
-  const [isConnected, setIsConnected] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [status, setStatus] = useState<AgentStatus>('idle');
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const vapiRef = useRef<Vapi | null>(null);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    console.log('VAPI KEY:', process.env.NEXT_PUBLIC_VAPI_KEY, 'ASSISTANT:', process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID);
+
     const key = process.env.NEXT_PUBLIC_VAPI_KEY;
     if (!key) {
-      setError('NEXT_PUBLIC_VAPI_KEY is not configured');
+      setErrorMsg('NEXT_PUBLIC_VAPI_KEY is not configured');
+      setStatus('error');
       return;
     }
 
     const vapi = new Vapi(key);
     vapiRef.current = vapi;
 
-    vapi.on('call-start', () => { setIsConnected(true); setError(null); });
-    vapi.on('call-end', () => { setIsConnected(false); setIsSpeaking(false); });
-    vapi.on('speech-start', () => setIsSpeaking(true));
-    vapi.on('speech-end', () => setIsSpeaking(false));
-    vapi.on('error', (err: any) => {
-      setError(err?.message ?? 'Call failed');
-      setIsConnected(false);
-      setIsSpeaking(false);
+    vapi.on('call-start', () => { setStatus('listening'); setErrorMsg(null); });
+    vapi.on('call-end', () => setStatus('idle'));
+    vapi.on('speech-start', () => setStatus('speaking'));
+    vapi.on('speech-end', () => setStatus('listening'));
+    vapi.on('error', (err: unknown) => {
+      console.error('Vapi error:', JSON.stringify(err, null, 2), err);
+      const msg = (err as { message?: string })?.message ?? String(err) ?? 'Call failed';
+      setErrorMsg(msg);
+      setStatus('error');
     });
-    vapi.on('message', (msg: any) => {
-      if (msg.type === 'transcript' && msg.transcriptType === 'final') {
-        setTranscript((prev) => [...prev, { role: msg.role, text: msg.transcript }]);
+    vapi.on('message', (msg: { type: string; transcriptType?: string; role?: string; transcript?: string }) => {
+      if (msg.type === 'transcript' && msg.transcriptType === 'final' && msg.role && msg.transcript) {
+        setTranscript((prev) => [...prev, { role: msg.role as 'user' | 'assistant', text: msg.transcript! }]);
       }
     });
 
@@ -45,114 +89,261 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: 'smooth' });
+    }
   }, [transcript]);
 
-  const toggleCall = async () => {
+  const stopCall = useCallback(() => {
+    vapiRef.current?.stop();
+    setStatus('idle');
+  }, []);
+
+  const toggleCall = useCallback(async () => {
     if (!vapiRef.current) return;
-    setError(null);
-    if (isConnected) {
-      vapiRef.current.stop();
-    } else {
-      const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
-      if (!assistantId) {
-        setError('NEXT_PUBLIC_VAPI_ASSISTANT_ID is not configured');
-        return;
-      }
-      await vapiRef.current.start(assistantId);
+    setErrorMsg(null);
+
+    if (status === 'listening' || status === 'speaking' || status === 'connecting') {
+      stopCall();
+      return;
     }
-  };
+
+    const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
+    if (!assistantId) {
+      setErrorMsg('NEXT_PUBLIC_VAPI_ASSISTANT_ID is not configured');
+      setStatus('error');
+      return;
+    }
+
+    setStatus('connecting');
+    try {
+      await vapiRef.current.start(assistantId);
+    } catch (err) {
+      console.error('Vapi start error:', err);
+      setErrorMsg((err as { message?: string })?.message ?? 'Failed to start call');
+      setStatus('error');
+    }
+  }, [status, stopCall]);
+
+  const bgColor = '#0e0a04';
+  const isActive = status === 'listening' || status === 'speaking' || status === 'connecting';
+  const accentColor = status === 'speaking' ? '#a78bfa' : status === 'error' ? '#f87171' : '#f59e0b';
+
+  const buttonIcon =
+    status === 'connecting' ? <Spinner /> :
+    status === 'speaking' ? <WaveBars color={accentColor} /> :
+    <MicIcon />;
 
   return (
-    <div className="min-h-[100dvh] bg-[#09090f] text-white flex flex-col items-center justify-center p-6">
-      <div className="w-full max-w-sm">
-
-        <div className="text-center mb-14">
-          <h1 className="text-2xl font-semibold tracking-tight mb-1.5">Thread Coordinator</h1>
-          <p className="text-zinc-500 text-sm">Voice AI for parallel workstreams</p>
-        </div>
-
-        {/* Mic button */}
-        <div className="flex justify-center mb-10">
-          <div className="relative flex items-center justify-center">
-            {isConnected && (
-              <>
-                <span className="absolute w-[120px] h-[120px] rounded-full bg-amber-500/10 animate-ping" />
-                <span className="absolute w-[104px] h-[104px] rounded-full bg-amber-500/15 animate-pulse" />
-              </>
-            )}
-            <button
-              onClick={toggleCall}
-              style={{ width: 88, height: 88 }}
-              className={`relative rounded-full font-semibold transition-all duration-300 focus:outline-none active:scale-95 ${
-                isConnected
-                  ? isSpeaking
-                    ? 'bg-amber-500 shadow-[0_0_32px_rgba(245,158,11,0.5)] scale-105'
-                    : 'bg-amber-600 shadow-[0_0_24px_rgba(217,119,6,0.35)]'
-                  : 'bg-zinc-800 hover:bg-zinc-750 shadow-[0_4px_24px_rgba(0,0,0,0.6)] border border-zinc-700/80 hover:border-zinc-600'
-              }`}
-            >
-              <span className="text-2xl select-none">
-                {isConnected ? (isSpeaking ? '◉' : '◎') : '🎙'}
-              </span>
-            </button>
-          </div>
-        </div>
-
-        {/* Status pill */}
-        <div className="flex justify-center mb-7">
-          <span
-            className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium tracking-wide ${
-              isConnected
-                ? 'bg-amber-950/50 text-amber-400 border border-amber-900/50'
-                : 'bg-zinc-900/80 text-zinc-500 border border-zinc-800'
-            }`}
+    <div
+      style={{
+        height: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        maxWidth: 512,
+        margin: '0 auto',
+        overflow: 'hidden',
+        touchAction: 'none',
+        overscrollBehavior: 'none',
+        background: bgColor,
+        color: 'white',
+      }}
+    >
+      {/* Header */}
+      <header
+        className="shrink-0 flex items-start"
+        style={{
+          padding: 'max(env(safe-area-inset-top), 20px) 24px 8px',
+          background: bgColor,
+          zIndex: 10,
+        }}
+      >
+        <div>
+          <h1
+            className="text-5xl font-black tracking-tight leading-none"
+            style={{ color: accentColor, transition: 'color 0.4s ease' }}
           >
-            <span
-              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                isConnected ? 'bg-amber-400 animate-pulse' : 'bg-zinc-600'
-              }`}
-            />
-            {isConnected ? (isSpeaking ? 'Agent speaking…' : 'Listening') : 'Ready'}
-          </span>
+            Thread
+          </h1>
+          <p className="text-xs mt-1 tracking-widest uppercase" style={{ color: 'rgba(255,255,255,0.3)' }}>
+            voice coordinator
+          </p>
         </div>
+      </header>
 
-        {error && (
-          <div className="mb-4 px-4 py-2.5 rounded-xl bg-red-950/40 border border-red-900/40 text-red-400 text-xs text-center">
-            {error}
+      {/* Scrollable transcript */}
+      <div
+        ref={transcriptRef}
+        className="flex-1 overflow-y-auto"
+        style={{
+          WebkitOverflowScrolling: 'touch',
+          overscrollBehavior: 'contain',
+          padding: '12px 16px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+        }}
+      >
+        {transcript.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 py-12">
+            <div
+              className="w-px h-12"
+              style={{ background: 'linear-gradient(to bottom, transparent, rgba(255,255,255,0.1), transparent)' }}
+            />
+            <p className="text-sm text-center" style={{ color: 'rgba(255,255,255,0.2)' }}>
+              Conversation will appear here
+            </p>
+            <div
+              className="w-px h-12"
+              style={{ background: 'linear-gradient(to bottom, transparent, rgba(255,255,255,0.1), transparent)' }}
+            />
           </div>
-        )}
-
-        {/* Transcript */}
-        <div className="backdrop-blur-md bg-white/[0.025] border border-white/[0.05] rounded-2xl p-4 h-72 overflow-y-auto flex flex-col gap-3">
-          {transcript.length === 0 ? (
-            <div className="flex items-center justify-center h-full">
-              <p className="text-zinc-600 text-sm">Tap the mic to begin</p>
-            </div>
-          ) : (
-            transcript.map((entry, i) => (
-              <div key={i} className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+        ) : (
+          transcript.map((entry, i) => (
+            <Fragment key={i}>
+              <div className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
-                  className={`max-w-[80%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                  className="max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed"
+                  style={
                     entry.role === 'user'
-                      ? 'bg-amber-600/80 text-white rounded-br-sm'
-                      : 'bg-zinc-800/80 text-zinc-200 rounded-bl-sm'
-                  }`}
+                      ? {
+                          background: 'rgba(245,158,11,0.18)',
+                          border: '1px solid rgba(245,158,11,0.25)',
+                          borderBottomRightRadius: 4,
+                          color: 'white',
+                        }
+                      : {
+                          background: 'rgba(255,255,255,0.06)',
+                          border: '1px solid rgba(255,255,255,0.08)',
+                          borderBottomLeftRadius: 4,
+                          color: 'rgba(255,255,255,0.9)',
+                        }
+                  }
                 >
                   {entry.text}
                 </div>
               </div>
-            ))
+            </Fragment>
+          ))
+        )}
+      </div>
+
+      {/* Fixed bottom bar */}
+      <div
+        className="shrink-0 flex flex-col items-center gap-5 backdrop-blur-xl"
+        style={{
+          padding: '16px 24px max(env(safe-area-inset-bottom), 24px)',
+          background: 'linear-gradient(to bottom, transparent 0%, rgba(14,10,4,0.85) 40%, rgba(14,10,4,1) 70%)',
+          zIndex: 10,
+        }}
+      >
+        {errorMsg && (
+          <p className="text-xs text-center max-w-xs" style={{ color: 'rgba(248,113,113,0.8)' }}>
+            {errorMsg}
+          </p>
+        )}
+
+        {/* Button with pulse rings */}
+        <div className="relative flex items-center justify-center">
+          {(status === 'listening' || status === 'speaking') && (
+            <span
+              className="absolute rounded-full"
+              style={{
+                width: 144,
+                height: 144,
+                background: accentColor,
+                opacity: 0.07,
+                animation: 'ring-expand 2s ease-out infinite',
+              }}
+            />
           )}
-          <div ref={transcriptEndRef} />
+          {(status === 'listening' || status === 'speaking') && (
+            <span
+              className="absolute rounded-full"
+              style={{
+                width: 120,
+                height: 120,
+                background: accentColor,
+                opacity: 0.12,
+                animation: 'ring-expand 2s ease-out infinite 0.6s',
+              }}
+            />
+          )}
+
+          <button
+            onClick={toggleCall}
+            disabled={status === 'connecting'}
+            aria-label={isActive ? 'End call' : 'Start call'}
+            className="relative z-10 rounded-full flex items-center justify-center active:scale-95"
+            style={{
+              width: 88,
+              height: 88,
+              background: isActive
+                ? `rgba(${status === 'speaking' ? '167,139,250' : '245,158,11'}, 0.12)`
+                : 'rgba(255,255,255,0.06)',
+              border: `2px solid ${isActive ? accentColor : 'rgba(255,255,255,0.15)'}`,
+              boxShadow: isActive ? `0 0 32px ${accentColor}33, 0 0 8px ${accentColor}22` : 'none',
+              color: isActive ? accentColor : 'rgba(255,255,255,0.5)',
+              transition: 'all 0.3s ease',
+            }}
+          >
+            {buttonIcon}
+          </button>
         </div>
 
-        <div className="mt-6 text-center">
-          <a href="/dashboard" className="text-zinc-600 text-xs hover:text-zinc-400 transition-colors tracking-wide">
-            Thread Dashboard →
-          </a>
-        </div>
+        {isActive && status !== 'connecting' && (
+          <button
+            onClick={stopCall}
+            style={{
+              color: 'rgba(255,255,255,0.3)',
+              fontSize: 12,
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
+              minHeight: 44,
+              padding: '0 24px',
+            }}
+          >
+            End
+          </button>
+        )}
 
+        {!isActive && (
+          <p
+            style={{
+              color: 'rgba(255,255,255,0.3)',
+              fontSize: 12,
+              letterSpacing: '0.05em',
+              minHeight: 44,
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            {status === 'error' ? 'Tap to retry' : 'Tap to start a conversation'}
+          </p>
+        )}
+
+        {status === 'listening' && (
+          <p style={{ color: accentColor, fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', minHeight: 20 }}>
+            Listening
+          </p>
+        )}
+        {status === 'speaking' && (
+          <p style={{ color: accentColor, fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', minHeight: 20 }}>
+            Speaking
+          </p>
+        )}
+        {status === 'connecting' && (
+          <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', minHeight: 20 }}>
+            Connecting…
+          </p>
+        )}
+
+        <a
+          href="/dashboard"
+          style={{ color: 'rgba(255,255,255,0.15)', fontSize: 11, letterSpacing: '0.05em' }}
+        >
+          Thread Dashboard →
+        </a>
       </div>
     </div>
   );
