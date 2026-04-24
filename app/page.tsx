@@ -138,10 +138,9 @@ export default function Home() {
     <div
       style={{
         height: '100dvh',
+        width: '100%',
         display: 'flex',
         flexDirection: 'column',
-        maxWidth: 512,
-        margin: '0 auto',
         overflow: 'hidden',
         touchAction: 'none',
         overscrollBehavior: 'none',
