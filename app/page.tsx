@@ -55,6 +55,7 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const vapiRef = useRef<Vapi | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const pendingUserTextRef = useRef<string | null>(null);
 
   useEffect(() => {
     console.log('VAPI KEY:', process.env.NEXT_PUBLIC_VAPI_KEY, 'ASSISTANT:', process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID);
@@ -82,6 +83,41 @@ export default function Home() {
     vapi.on('message', (msg: { type: string; transcriptType?: string; role?: string; transcript?: string }) => {
       if (msg.type === 'transcript' && msg.transcriptType === 'final' && msg.role && msg.transcript) {
         setTranscript((prev) => [...prev, { role: msg.role as 'user' | 'assistant', text: msg.transcript! }]);
+
+        if (msg.role === 'user') {
+          pendingUserTextRef.current = msg.transcript;
+        } else if (msg.role === 'assistant' && pendingUserTextRef.current) {
+          const userText = pendingUserTextRef.current;
+          const assistantText = msg.transcript;
+          pendingUserTextRef.current = null;
+
+          (async () => {
+            try {
+              const classifyRes = await fetch('/api/threads/classify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ utterance: userText }),
+              });
+              const { threadId } = await classifyRes.json();
+              if (threadId && threadId !== 'none') {
+                await Promise.all([
+                  fetch(`/api/threads/${threadId}/message`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ role: 'user', text: userText }),
+                  }),
+                  fetch(`/api/threads/${threadId}/message`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ role: 'ed', text: assistantText }),
+                  }),
+                ]);
+              }
+            } catch (err) {
+              console.error('Thread classify/post error:', err);
+            }
+          })();
+        }
       }
     });
 
