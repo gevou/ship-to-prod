@@ -51,9 +51,9 @@ export default function Dashboard() {
       for (const newThread of data) {
         const existing = merged.find(t => t.id === newThread.id);
         if (existing) {
-          const existingTimestamps = new Set(existing.history.map(m => m.timestamp));
-          const newMsgs = newThread.history.filter(m => !existingTimestamps.has(m.timestamp));
-          existing.history = [...existing.history, ...newMsgs];
+          const existingTimestamps = new Set((existing.history || []).map(m => m.timestamp));
+          const newMsgs = (newThread.history || []).filter(m => !existingTimestamps.has(m.timestamp));
+          existing.history = [...(existing.history || []), ...newMsgs];
           existing.summary = newThread.summary;
           existing.status = newThread.status;
         } else {
